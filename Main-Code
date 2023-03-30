@@ -1,0 +1,820 @@
+#include <HTTPClient.h>
+#include <WiFi.h>         //Including wifi.h library it will take care of all wifi related task
+
+String apiKey = "5576806";              //Add your Token number that bot has sent you on WhatsApp messenger
+String phone_number = "+923065720467"; //Add your WhatsApp app registered phone number (same number that bot send you in url)
+String url;
+//-------------new code variables
+const long resetInterval = 60000;  // 
+const long updateInterval = 900000;  // update server
+unsigned long previousMillis = 0;  // will store last time LED was updated
+//-------------wind variables
+const int RecordTime = 30; //Define Measuring Time (Seconds)
+const int SensorPin = 35;  //Define Interrupt Pin (2 or 3 @ Arduino Uno)
+int InterruptCounter;
+float WindSpeed;
+//------------- sms variables
+int _timeout;
+String _buffer;
+//mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmM  control variables mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm
+const int Buffer=1000;   
+const int secToScan=3; // change this
+const int minToScan=1;
+int secActivityPercentage=150;
+int threshold=100;
+int minActivityLimit=3; // change this
+// mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm
+
+#define TINY_GSM_MODEM_SIM800
+#define MODEM_RST             5
+#define MODEM_PWRKEY          4
+#define MODEM_POWER_ON       23
+#define MODEM_TX             27
+#define MODEM_RX             26
+#define LED_GPIO             13
+#define LED_ON               HIGH
+#define LED_OFF              LOW
+#define VIBPIN 32
+#define DHTPIN 33
+#define BZR 25
+#define NUMBER "+923065720467"
+#define NUMBER1 ""
+
+//---------------------webserver
+#include <WiFi.h>
+#include <WiFiClient.h>
+#include <WebServer.h>
+#include <ESPmDNS.h>
+#include <Update.h>
+
+WebServer server(80);
+
+/*
+ * Login page
+ */
+const char* loginIndex = 
+ "<form name='loginForm'>"
+    "<table width='20%' bgcolor='A09F9F' align='center'>"
+        "<tr>"
+            "<td colspan=2>"
+                "<center><font size=4><b>ESP32 Login Page</b></font></center>"
+                "<br>"
+            "</td>"
+            "<br>"
+            "<br>"
+        "</tr>"
+        "<td>Username:</td>"
+        "<td><input type='text' size=25 name='userid'><br></td>"
+        "</tr>"
+        "<br>"
+        "<br>"
+        "<tr>"
+            "<td>Password:</td>"
+            "<td><input type='Password' size=25 name='pwd'><br></td>"
+            "<br>"
+            "<br>"
+        "</tr>"
+        "<tr>"
+            "<td><input type='submit' onclick='check(this.form)' value='Login'></td>"
+        "</tr>"
+    "</table>"
+  "</form>"
+  "<script>"
+      "function check(form)"
+      "{"
+      "if(form.userid.value=='admin' && form.pwd.value=='admin')"
+      "{"
+      "window.open('/serverIndex')"
+      "}"
+      "else"
+      "{"
+      " alert('Error Password or Username')/*displays error message*/"
+      "}"
+      "}"
+  "</script>";
+  
+  /*
+  * Server Index Page
+  */
+  
+  const char* serverIndex = 
+  "<script src='https://ajax.googleapis.com/ajax/libs/jquery/3.2.1/jquery.min.js'></script>"
+  "<form method='POST' action='#' enctype='multipart/form-data' id='upload_form'>"
+    "<input type='file' name='update'>"
+          "<input type='submit' value='Update'>"
+      "</form>"
+  "<div id='prg'>progress: 0%</div>"
+  "<script>"
+    "$('form').submit(function(e){"
+    "e.preventDefault();"
+    "var form = $('#upload_form')[0];"
+    "var data = new FormData(form);"
+    " $.ajax({"
+    "url: '/update',"
+    "type: 'POST',"
+    "data: data,"
+    "contentType: false,"
+    "processData:false,"
+    "xhr: function() {"
+    "var xhr = new window.XMLHttpRequest();"
+    "xhr.upload.addEventListener('progress', function(evt) {"
+    "if (evt.lengthComputable) {"
+    "var per = evt.loaded / evt.total;"
+    "$('#prg').html('progress: ' + Math.round(per*100) + '%');"
+    "}"
+    "}, false);"
+    "return xhr;"
+    "},"
+    "success:function(d, s) {"
+    "console.log('success!')" 
+  "},"
+  "error: function (a, b, c) {"
+  "}"
+  "});"
+  "});"
+  "</script>";
+
+//---------------------webserver
+
+#include "BluetoothSerial.h"
+
+#if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
+#error Bluetooth is not enabled! Please run `make menuconfig` to and enable it
+#endif
+
+#if !defined(CONFIG_BT_SPP_ENABLED)
+#error Serial Bluetooth not available or not enabled. It is only available for the ESP32 chip.
+#endif
+
+BluetoothSerial SerialBT;
+
+
+// Set serial for debug console (to the Serial Monitor, default speed 115200)
+#define SerialMon Serial
+
+// Set serial for AT commands (to the module)
+// Use Hardware Serial on Mega, Leonardo, Micro
+#ifndef __AVR_ATmega328P__
+#define SerialAT Serial1
+
+// or Software Serial on Uno, Nano
+#else
+#include <SoftwareSerial.h>
+SoftwareSerial SerialAT(26, 27);  // RX, TX
+#endif
+
+// Increase RX buffer to capture the entire response
+// Chips without internal buffering (A6/A7, ESP8266, M590)
+// need enough space in the buffer for the entire response
+// else data will be lost (and the http library will fail).
+#if !defined(TINY_GSM_RX_BUFFER)
+#define TINY_GSM_RX_BUFFER 650
+#endif
+
+// See all AT commands, if wanted
+// #define DUMP_AT_COMMANDS
+
+// Define the serial console for debug prints, if needed
+#define TINY_GSM_DEBUG SerialMon
+// #define LOGGING  // <- Logging is for the HTTP library
+
+// Range to attempt to autobaud
+// NOTE:  DO NOT AUTOBAUD in production code.  Once you've established
+// communication, set a fixed baud rate using modem.setBaud(#).
+#define GSM_AUTOBAUD_MIN 9600
+#define GSM_AUTOBAUD_MAX 115200
+
+// Add a reception delay, if needed.
+// This may be needed for a fast processor at a slow baud rate.
+// #define TINY_GSM_YIELD() { delay(2); }
+// Define how you're planning to connect to the internet
+// These defines are only for this example; they are not needed in other code.
+
+#define TINY_GSM_USE_GPRS false
+#define TINY_GSM_USE_WIFI true
+
+// set GSM PIN, if any
+#define GSM_PIN ""
+
+// Your GPRS credentials, if any
+const char apn[]      = "zonginternet";
+const char gprsUser[] = "";
+const char gprsPass[] = "";
+
+// Your WiFi connection credentials, if applicable
+const char* host = "Tower-471"; //device ID for webserver
+const char* ssid = "Ayk-Multan";
+const char* password = "multanbranch";
+String whatsappserver = "api.whatabot.net";
+const int apiPort = 443;
+String serverLink   = "iotdashboard.time.org.pk";
+String resource = "/record-data.php?apikey=iotuser1598&&devicename=test935&&channel1=80&&channel2=44&&channel3=3";
+const int  port       = 80;
+
+//#include <HttpClient.h>
+#include <TinyGsmClient.h>
+#include <ArduinoHttpClient.h>
+#include <DHT.h>
+
+//MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM  select whether to use WIFI or GPRS MMMMMMMMMMMMMMMMM
+#define USE_SERVER false
+#define USE_WIFI false
+#define USE_GPRS true 
+
+// Just in case someone defined the wrong thing..
+#if TINY_GSM_USE_GPRS && not defined TINY_GSM_MODEM_HAS_GPRS
+#undef TINY_GSM_USE_GPRS
+#undef TINY_GSM_USE_WIFI
+#define TINY_GSM_USE_GPRS false
+#define TINY_GSM_USE_WIFI true
+#endif
+#if TINY_GSM_USE_WIFI && not defined TINY_GSM_MODEM_HAS_WIFI
+#undef TINY_GSM_USE_GPRS
+#undef TINY_GSM_USE_WIFI
+#define TINY_GSM_USE_GPRS true
+#define TINY_GSM_USE_WIFI false
+#endif
+DHT dht(DHTPIN, DHT22);
+float temp;
+float hum;
+
+#ifdef DUMP_AT_COMMANDS
+#include <StreamDebugger.h>
+StreamDebugger debugger(SerialAT, SerialMon);
+TinyGsm        modem(debugger);
+#else
+TinyGsm        modem(SerialAT);
+#endif
+
+TinyGsmClient client(modem);
+HttpClient    http(client, serverLink, port, whatsappserver, apiport);
+
+void setup() {
+  
+  Serial.println("Program started.");
+  Serial.begin(115200);
+  SerialBT.begin("Tower-471-Bluetooth"); //Bluetooth device name
+  Serial.println("The device started, now you can pair it with bluetooth!");
+  WiFi.begin(ssid, password);
+  dht.begin();
+  pinMode(BZR, OUTPUT);
+
+  #if USE_SERVER
+  startServer();
+  #endif
+
+
+ //----------------------- new
+  SerialAT.begin(115200, 0x800001c, MODEM_RX, MODEM_TX);
+  setupModem();
+  delay(1000);
+  //------------------------------------------//
+  //pinMod(BZR,HIGH);
+
+  SerialMon.println("Wait...");
+
+  // Set GSM module baud rate
+  //TinyGsmAutoBaud(SerialAT, GSM_AUTOBAUD_MIN, GSM_AUTOBAUD_MAX);
+  SerialAT.begin(9600);
+  delay(1000);
+
+  // Restart takes quite some time
+  // To skip it, call init() instead of restart()
+  SerialMon.println(F("Initializing modem..."));
+  modem.init();
+  modem.restart();
+  // modem.init();
+
+  String modemInfo = modem.getModemInfo();
+  SerialMon.print(F("Modem Info: "));
+  SerialMon.println(modemInfo);
+
+  #if USE_WIFI
+  connectWifi();
+  #endif
+  #if USE_GPRS
+  connectGPRS();
+  #endif
+}
+
+//MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM-------------VOID LOOP --------------------
+void loop() {
+
+ //000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 
+  #if USE_SERVER        // webserver for code upload via wifi
+  server.handleClient();
+  delay(1);
+  if (WiFi.status() != WL_CONNECTED) {
+    startServer();
+  }
+  #endif
+//0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+
+  int alarm=getAlarm1();
+  SerialBT.print("\nalarm: ");
+  SerialBT.print(alarm);
+  #if USE_WIFI
+    if(alarm>=1){
+    sendOnWifi(alarm);
+    message_to_whatsapp("Sbotage Alert.");  // Sending alert message to WhatsApp
+      delay(3000);
+    }
+  #endif
+  #if USE_GPRS
+    if(alarm>=1){
+    sendOnGPRS(alarm);  
+    message_to_whatsapp("Alert!!! Someone Opened Your Door.");  // Sending alert message to WhatsApp
+      delay(3000);
+    }
+  #endif
+
+  unsigned long currentMillis = millis();
+  if (currentMillis - previousMillis >= updateInterval) {
+        previousMillis = currentMillis;
+  Serial.print(F("\n Data updated on Server...\n"));
+    #if USE_WIFI
+    sendOnWifi(alarm);
+  #endif
+  #if USE_GPRS
+    sendOnGPRS(alarm);  
+  #endif
+  }
+  
+  // if (currentMillis - previousMillis >= 90000) {
+  //       previousMillis = currentMillis;
+  //       modem.gprsDisconnect();
+  //       Serial.print(F("\n GPRS Disconnected for test...\n"));
+  //       delay(2000);
+  // }
+  
+}//void bracket
+//MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM-------------ALL FUNCTION --------------------
+void setupModem(){
+  #ifdef MODEM_RST
+    // Keep reset high
+    pinMode(MODEM_RST, OUTPUT);
+    digitalWrite(MODEM_RST, HIGH);
+  #endif
+
+    pinMode(MODEM_PWRKEY, OUTPUT);
+    pinMode(MODEM_POWER_ON, OUTPUT);
+
+    // Turn on the Modem power first
+    digitalWrite(MODEM_POWER_ON, HIGH);
+
+    // Pull down PWRKEY for more than 1 second according to manual requirements
+    digitalWrite(MODEM_PWRKEY, HIGH);
+    delay(100);
+    digitalWrite(MODEM_PWRKEY, LOW);
+    delay(1000);
+    digitalWrite(MODEM_PWRKEY, HIGH);
+
+    // Initialize the indicator as an output
+    pinMode(LED_GPIO, OUTPUT);
+    digitalWrite(LED_GPIO, LED_OFF);
+}
+//---------------------------------------------------------- web server
+void startServer(){
+  WiFi.begin(ssid, password);
+  Serial.println("");
+
+  // Wait for connection
+  for (int i=0; i<20;i++){
+    if (WiFi.status() != WL_CONNECTED) {
+      delay(500);
+      Serial.print(".");
+      }else{
+          Serial.println("");
+          Serial.print("Connected to ");
+          Serial.println(ssid);
+          Serial.print("IP address: ");
+          Serial.println(WiFi.localIP());
+
+          SerialBT.println("");
+          SerialBT.print("Connected to ");
+          SerialBT.println(ssid);
+          SerialBT.print("IP address: ");
+          SerialBT.println(WiFi.localIP());
+          }
+      if(i==20){
+        Serial.println("");
+        Serial.print("Couldn't find WiFi! exiting without WiFi ... ");
+        SerialBT.println("");
+        SerialBT.print("Couldn't find WiFi! exiting without WiFi ... ");
+      }
+    }
+
+    
+    /*use mdns for host name resolution*/
+    if (!MDNS.begin(host)) { //http://esp32.local
+      Serial.println("Error setting up MDNS responder!");
+      SerialBT.println("Error setting up MDNS responder!");
+      while (1) {
+        delay(1000);
+      }
+    }
+    Serial.println("mDNS responder started");
+    SerialBT.println("mDNS responder started");
+    /*return index page which is stored in serverIndex */
+    server.on("/", HTTP_GET, []() {
+      server.sendHeader("Connection", "close");
+      server.send(200, "text/html", loginIndex);
+    });
+    server.on("/serverIndex", HTTP_GET, []() {
+      server.sendHeader("Connection", "close");
+      server.send(200, "text/html", serverIndex);
+    });
+    /*handling uploading firmware file */
+    server.on("/update", HTTP_POST, []() {
+      server.sendHeader("Connection", "close");
+      server.send(200, "text/plain", (Update.hasError()) ? "FAIL" : "OK");
+      ESP.restart();
+    }, []() {
+      HTTPUpload& upload = server.upload();
+      if (upload.status == UPLOAD_FILE_START) {
+        Serial.printf("Update: %s\n", upload.filename.c_str());
+        if (!Update.begin(UPDATE_SIZE_UNKNOWN)) { //start with max available size
+          Update.printError(Serial);
+        }
+      } else if (upload.status == UPLOAD_FILE_WRITE) {
+        /* flashing firmware to ESP*/
+        if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+          Update.printError(Serial);
+          Update.printError(SerialBT);
+        }
+      } else if (upload.status == UPLOAD_FILE_END) {
+        if (Update.end(true)) { //true to set the size to the current progress
+          Serial.printf("Update Success: %u\nRebooting...\n", upload.totalSize);
+          SerialBT.printf("Update Success: %u\nRebooting...\n", upload.totalSize);
+        } else {
+          Update.printError(Serial);
+          Update.printError(SerialBT);
+        }
+      }
+    });
+    server.begin();
+}
+//-----------------------------------------------------------web server
+
+//----------------------------------- for wifi connection
+void connectWifi(){
+  
+  Serial.print(F("Connecting to WiFi"));
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.print(F("OK! IP="));
+  Serial.println(WiFi.localIP());
+
+}
+void checkGPRS(){
+    SerialBT.print("\n i am in checkGPRS\n");
+    Serial.print("\n\n i am in checkGPRS\n");
+    if (!modem.isGprsConnected()){
+    SerialBT.print("\nGPRS disconnected! Connecting to GPRS");
+    Serial.print("\nGPRS disconnected! Connecting to GPRS");
+    if (!modem.gprsConnect(apn, gprsUser, gprsPass)) {
+    SerialMon.println(F(" fail"));
+    delay(1000);
+    return;
+    }else{
+    SerialBT.print("\nGPRS Reconnected successfully");
+    Serial.print("\nGPRS Reconnected successfully");
+    Serial.println(modem.localIP());
+    SerialBT.print(modem.localIP());
+    }
+  }
+}
+void sendOnWifi(int alarm) {
+  dht22_func();
+  String tobesend = "http://api.callmebot.com/whatsapp.php?";
+      tobesend = tobesend + "phone=+923065720467";
+      tobesend = tobesend + "&text=The+button+on+the+ESP+was+pressed";
+      tobesend = tobesend + "&apikey=5576806";
+  String URL= "http://iotdashboard.time.org.pk/record-data.php?apikey=";
+  String API= "iotuser1598";
+  String DEV_NAME= "NKI-JSO-471809";
+  String CHANNEL1_VALUE = String(temp);
+  String CHANNEL2_VALUE = String(hum);
+  String CHANNEL3_VALUE = String(alarm);
+  String CHANNEL4_VALUE = String(0);
+  String CHANNEL5_VALUE = String(0);
+  String CHANNEL6_VALUE = String(0);
+  String DATA_STRING = URL + API + "&&devicename=" + DEV_NAME + "&&channel1=" + CHANNEL1_VALUE + "&&channel2=" + CHANNEL2_VALUE + "&&channel3=" + CHANNEL3_VALUE + "&&channel4=" + CHANNEL4_VALUE + "&&channel5="+ CHANNEL5_VALUE + "&&channel6="+ CHANNEL6_VALUE;
+  String url=DATA_STRING;  
+
+  //Serial.print("Fetching " + url + "... ");
+  SerialMon.print(F("Performing HTTP GET request... "));
+  SerialBT.println("\nPerforming HTTP GET request... ");
+  int err = http.get(url);
+  if (err != 0) {
+    SerialMon.println(F("i am in failed to connect"));
+    checkGPRS();
+    delay(1000);
+    return;
+  }
+
+    HTTPClient http;
+    http.begin(client, url, tobesend);
+
+   int httpResponseCode = http.GET();
+   if (httpResponseCode > 0) {
+     Serial.print("HTTP ");
+     Serial.println(httpResponseCode);
+     SerialBT.print("\n HTTP Response Code: ");
+     SerialBT.print(httpResponseCode);
+     String payload = http.getString();
+     Serial.println();
+     Serial.println(payload);
+    }
+   else {
+     Serial.print("Error code: ");
+    Serial.println(httpResponseCode);
+     Serial.println(":-(");
+   }
+  
+}
+//---------------------------------- send on GPRS
+void sendOnGPRS(int alarm){
+  dht22_func();
+  String API= "iotuser1598";
+  String DEV_NAME= "NKI-JSO-471809";
+  String CHANNEL1_VALUE = String(temp);
+  String CHANNEL2_VALUE = String(hum);
+  String CHANNEL3_VALUE = String(random(30));
+  String CHANNEL4_VALUE = String(alarm);
+  String CHANNEL5_VALUE = String(0);
+  String CHANNEL6_VALUE = String(modem.localIP().toString().c_str());  
+  resource = "/record-data.php?apikey="+ API + "&&devicename=" + DEV_NAME + "&&channel1=" + CHANNEL1_VALUE + "&&channel2=" + CHANNEL2_VALUE + "&&channel3=" + CHANNEL3_VALUE + "&&channel4=" + CHANNEL4_VALUE + "&&channel5="+ CHANNEL5_VALUE + "&&channel6="+ CHANNEL6_VALUE;
+  
+  SerialMon.print(F("Performing HTTP GET request... "));
+  SerialBT.println("\nPerforming HTTP GET request... ");
+  int err = http.get(resource);
+  if (err != 0) {
+    SerialMon.println(F("failed to connect, restarting the module..."));
+    SerialBT.println(F("failed to connect, restarting the module..."));
+    ESP.restart();
+    delay(1000);
+    return;
+  }
+
+  int status = http.responseStatusCode();
+  SerialMon.print(F("Response status code: "));
+  SerialMon.println(status);
+  SerialBT.print(F("Response status code: "));
+  SerialBT.println(status);
+
+    SerialMon.print(F("Response status code: "));
+  SerialMon.println(!status);
+  SerialBT.print(F("Response status code: "));
+  SerialBT.println(!status);
+  if (status!=200) {
+    delay(1000);
+    SerialMon.print(F("\n Bad response, restarting the module... \n"));
+    ESP.restart();
+    return;
+  }
+  printData(temp,hum,WindSpeed,alarm);
+
+  // SerialMon.println(F("Response Headers:"));
+  // if (http.headerAvailable()) {
+  //   String headerName  = http.readHeaderName();
+  //   String headerValue = http.readHeaderValue();
+  //   SerialMon.println("    " + headerName + " : " + headerValue);
+  // }else{
+  // SerialMon.print(F("Header not available... "));
+  // SerialBT.println("\nHeader not available... ");
+  // }
+
+  // int length = http.contentLength();
+  // if (length >= 0) {
+  //   SerialMon.print(F("Content length is: "));
+  //   SerialMon.println(length);
+  // }
+  // if (http.isResponseChunked()) {
+  //   SerialMon.println(F("The response is chunked"));
+  // }
+
+  String body = http.responseBody();
+  SerialMon.println(F("Response:"));
+  SerialMon.println(body);
+
+  SerialMon.print(F("Body length is: "));
+  SerialMon.println(body.length());
+  //beep();
+  // Shutdown
+
+  http.stop();
+  SerialMon.println(F("Server disconnected"));
+
+  // #if TINY_GSM_USE_WIFI
+  //   modem.networkDisconnect();
+  //   SerialMon.println(F("WiFi disconnected"));
+  // #endif
+  // #if TINY_GSM_USE_GPRS
+  //   modem.gprsDisconnect();
+  //   SerialMon.println(F("GPRS disconnected"));
+  // #endif
+}
+void beep(){
+  for(int i=0; i<3;++i){
+  digitalWrite(BZR, HIGH);
+  delay(500);
+  digitalWrite(BZR, LOW);
+  }
+}
+void connectGPRS(){
+     SerialMon.print(F("Waiting for network..."));
+     SerialBT.print(F("Waiting for network..."));
+  if (!modem.waitForNetwork()) {
+    SerialMon.println(" fail");
+    delay(10000);
+    return;
+  }
+  SerialMon.println(F(" success"));
+  SerialBT.println(F("sucess"));
+  if (modem.isNetworkConnected()) { SerialMon.println(F("Network connected")); }
+   // GPRS connection parameters are usually set after network registration
+  SerialMon.print(F("Connecting to "));
+  SerialMon.print(apn);
+  if (!modem.gprsConnect(apn, gprsUser, gprsPass)) {
+    SerialMon.println(F(" fail"));
+    delay(10000);
+    return;
+  }
+  SerialMon.println(F(" success"));
+
+  if (modem.isGprsConnected()) { 
+    SerialMon.println(F("GPRS connected"));
+    SerialBT.print(F("GPRS connected"));
+     }
+  
+  Serial.println(modem.localIP());
+  SerialBT.print(modem.localIP());
+}
+
+//----------------------ALGO functions
+float wind() {
+  InterruptCounter = 0;
+  attachInterrupt(digitalPinToInterrupt(SensorPin), countup, RISING);
+  delay(500);
+  detachInterrupt(digitalPinToInterrupt(SensorPin));
+  WindSpeed = (float)InterruptCounter / (float)RecordTime * 2.4;
+  return WindSpeed;
+}
+
+void countup() {
+  InterruptCounter++;
+}
+void dht22_func() {
+  hum = dht.readHumidity();
+  temp = dht.readTemperature();
+  //delay(1000);
+}
+void printData(int hum, int temp,float WindSpeed, int alarmSum){
+    Serial.print("Humidity: ");
+    Serial.print(hum);
+    Serial.print("\tTemperature: ");
+    Serial.print(temp);
+    Serial.print("\tWind Speed: ");
+    Serial.print(WindSpeed);
+    Serial.print("\talarmSum: ");
+    Serial.print(alarmSum);
+    Serial.print("\n");
+
+    SerialBT.print("Humidity: ");
+    SerialBT.print(hum);
+    SerialBT.print("\tTemperature: ");
+    SerialBT.print(temp);
+    SerialBT.print("\tWind Speed: ");
+    SerialBT.print(WindSpeed);
+    SerialBT.print("\talarmSum: ");
+    SerialBT.print(alarmSum);
+    SerialBT.print("\n");
+ }
+ 
+//---------------------------------------------SMS
+
+//------------------------------ algo func
+int getAlarm1(){
+  int secSum=0;
+  int minSum=0;
+  int fiveMinSum=0;
+  int value=0;
+  int SigArray[Buffer];
+  int minArray[60];
+  int LastFiveMin[3];
+    // put your main code here, to run repeatedly:
+  for(int k = 0; k < minToScan; ++k){ // scans for last 5 mins
+    for (int i = 0; i < secToScan; ++i){ // scans for last 1 min
+        for ( int j = 0; j < Buffer; ++j ) { // scans for last 1 sec
+          value=analogRead(VIBPIN);
+          // store all sensor values in array
+          delay(5); // controls the speed of sensor scan...
+          if(value>threshold){
+            SigArray[j]=1;
+            secSum++;
+            }else{
+            SigArray[j]=0;
+            }
+          }
+        Serial.print(F("\nIn 1 sec: "));
+        Serial.print(secSum);
+        SerialBT.print(F("\nIn 1 sec: "));
+        SerialBT.print(secSum);
+        Serial.print("\n");
+      if(secSum>=secActivityPercentage){
+          minArray[i]=1;
+          minSum++;
+          secSum=0;
+        }else{
+          minArray[i]=0; // array of 60 sec containing 1s where activity is detected
+          secSum=0;
+          }
+    }
+    //------------------------------------------ end of 1 min array ------------     
+            Serial.print(F("\tIn 1 min: "));
+            SerialBT.print(F("\tIn 1 min: "));
+            Serial.print(minSum);
+            SerialBT.print(minSum);
+            return minSum;
+            Serial.print("\n");
+            //---------------------------------- 5 min array --------------------------
+      for (int i = 0; i < minToScan; ++i){
+        if(minSum>=minActivityLimit){
+              LastFiveMin[i]=1;
+              fiveMinSum++;
+              minSum=0;
+              }else{
+              LastFiveMin[i]=0;
+              minSum=0;
+              }    
+      }
+    }
+        //------------------------------- end of 5 min array ----------------------
+      // Serial.print("\t\tIn last 5 mins: ");
+      // Serial.print(fiveMinSum);
+      // Serial.print("\n");
+      //return fiveMinSum;
+      fiveMinSum=0;
+}
+void  message_to_whatsapp(String message)       // user define function to send meassage to whatsapp app
+{
+  //adding all number, your api key, your message into one complete url
+  url = "https://api.callmebot.com/whatsapp.php?phone=" + phone_number + "&apikey=" + apiKey + "&text=" + urlencode(message);
+
+  postData(); // calling postData to run the above-generated url once so that you will receive a message.
+}
+
+void postData()     //userDefine function used to call api(POST data)
+{
+  int httpCode;     // variable used to get the responce http code after calling api
+  HTTPClient http;  // Declare object of class HTTPClient
+  http.begin(url);  // begin the HTTPClient object with generated url
+  httpCode = http.POST(url); // Finaly Post the URL with this function and it will store the http code
+  if (httpCode == 200)      // Check if the responce http code is 200
+  {
+    Serial.println("Sent ok."); // print message sent ok message
+  }
+  else                      // if response HTTP code is not 200 it means there is some error.
+  {
+    Serial.println("Error."); // print error message.
+  }
+  http.end();          // After calling API end the HTTP client object.
+}
+
+String urlencode(String str)  // Function used for encoding the url
+{
+  String encodedString = "";
+  char c;
+  char code0;
+  char code1;
+  char code2;
+  for (int i = 0; i < str.length(); i++) {
+    c = str.charAt(i);
+    if (c == ' ') {
+      encodedString += '+';
+    } else if (isalnum(c)) {
+      encodedString += c;
+    } else {
+      code1 = (c & 0xf) + '0';
+      if ((c & 0xf) > 9) {
+        code1 = (c & 0xf) - 10 + 'A';
+      }
+      c = (c >> 4) & 0xf;
+      code0 = c + '0';
+      if (c > 9) {
+        code0 = c - 10 + 'A';
+      }
+      code2 = '\0';
+      encodedString += '%';
+      encodedString += code0;
+      encodedString += code1;
+      //encodedString+=code2;
+    }
+    yield();
+  }
+  return encodedString;
+}
